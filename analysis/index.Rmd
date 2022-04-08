@@ -8,4 +8,241 @@ editor_options:
   chunk_output_type: console
 ---
 
-Welcome to my research website.
+## Imputation work for IITA Kenya (Morag Ferguson)
+
+I followed the script wrote by [Marnin Wolfe](https://github.com/wolfemd) on [IITA_2021GS repository](https://wolfemd.github.io/IITA_2021GS/ImputeDCas21_6038.html). Great Guy
+
+```{bash Load R-4.1.2, eval = F}
+screen -R IITAImputation
+module load R/4.1.2
+R
+```
+
+### Input Parameters
+
+```{r Preparing the DArT Files, eval = FALSE}
+devtools::install_github("LucianoRogerio/genomicMateSelectR", ref = 'master') 
+
+library(tidyverse); library(magrittr)
+library(genomicMateSelectR)
+
+dartvcfInput<-here::here("data/","Report_6651_VCF_Ref_Version6.txt")
+dartcountsInput<-here::here("data/","SEQ_SNPs_counts_0_Target_extend_Ref.csv")
+outName<-here::here("output","DCas21_6651")
+nskipvcf<-2; nskipcounts<-2; ncores<-4
+
+```
+
+### Check format of DArT genotyping output
+
+Here the separator used by Diversity Array technology seems different from Marnin experience, the sep was a comma.
+```{r Checking DArT files, eval = FALSE}
+vcf<-read.table(dartvcfInput,
+                stringsAsFactors = F,skip = 2, header = T, sep = "\t", comment.char = "")
+vcf[1:10,1:30]
+readCounts<-read.csv(dartcountsInput, stringsAsFactors = F,header = T,skip=nskipcounts)
+readCounts[1:10,1:50]
+```
+
+```
+> dim(vcf)
+[1] 13603   372
+
+> dim(readCounts)
+[1] 27206   406
+
+> colnames(readCounts)[1:50]
+ [1] "AlleleID"                    "CloneID"                    
+ [3] "ClusterTempIndex"            "AlleleSequence"             
+ [5] "TrimmedSequence"             "TrimmedSequence_plus_Strand"
+ [7] "Short"                       "Lowcomplexity"              
+ [9] "Chrom_Cassava_v61"           "ChromPos_Cassava_v61"       
+[11] "SNP_ChromPos_Cassava_v61"    "AlnCnt_Cassava_v61"         
+[13] "AlnEvalue_Cassava_v61"       "Strand_Cassava_v61"         
+[15] "SeqDiff_Cassava_v61"         "ClusterConsensusSequence"   
+[17] "ClusterSize"                 "AlleleSeqDist"              
+[19] "SNP"                         "SnpPosition"                
+[21] "CallRate"                    "OneRatioRef"                
+[23] "OneRatioSnp"                 "FreqHomRef"                 
+[25] "FreqHomSnp"                  "FreqHets"                   
+[27] "PICRef"                      "PICSnp"                     
+[29] "AvgPIC"                      "AvgCountRef"                
+[31] "AvgCountSnp"                 "RatioAvgCountRefAvgCountSnp"
+[33] "FreqHetsMinusFreqMinHom"     "AlleleCountsCorrelation"    
+[35] "aggregateTagsTotal"          "DerivedCorrMinusSeedCorr"   
+[37] "RepRef"                      "RepSNP"                     
+[39] "RepAvg"                      "PicRepRef"                  
+[41] "PicRepSNP"                   "TotalPicRepRefTest"         
+[43] "TotalPicRepSnpTest"          "DS120xT14_17"               
+[45] "DS120xT14_18"                "DS120xT14_19"               
+[47] "DS120xT14_20"                "DS120xT14_21"               
+[49] "DS120xT14_22"                "DS120xT14_23"  
+
+> colnames(vcf)
+ [1] "X.CHROM"     "POS"         "ID"          "REF"         "ALT"         "QUAL"        "FILTER"      "INFO"       
+ [9] "FORMAT"      "DS120xT14_1"
+```
+
+### Run conversion function
+
+```{r Conversion of DArT File to VCF, eval = F}
+genomicMateSelectR::convertDart2vcf(dartvcfInput, dartcountsInput, outName,
+                                    nskipvcf = nskipvcf, nskipcounts = nskipcounts, ncores = 22)
+```
+
+### Genomewide to per-Chrom VCFs
+
+Split the genome-wide VCF into per-chromosome VCFs for imputation.
+
+```{r Separate the VCF in Chromosomes, eval = F}
+require(furrr); plan(multisession, workers = 18)
+options(future.globals.maxSize=+Inf); options(future.rng.onMisuse="ignore")
+  
+vcfIn<-here::here("output","DCas21_6651.vcf.gz")
+filters<-"--minDP 4 --maxDP 50" # because using GT not PL for impute (Beagle5)
+outPath<-here::here("output/Report-DCas21-6651/")
+outSuffix<-"DCas21_6651"
+
+future_map(1:18,
+           ~genomicMateSelectR::splitVCFbyChr(Chr=.,
+                                              vcfIn=vcfIn,filters=filters,
+                                              outPath=outPath,
+                                              outSuffix=outSuffix))
+plan(sequential)
+
+```
+
+
+### Imputation with West Africa RefPanel
+
+Imputation using Beagle V5.0.
+
+```{r Imputation, eval = F}
+
+targetVCFpath<-here::here("data/Report-DCas21-6651/") # location of the targetVCF
+refVCFpath<-here::here("data/")
+mapPath<-here::here("data/CassavaGeneticMap/")
+outPath<-here::here("output/")
+outSuffix<-"DCas21_6651"
+
+purrr::map(1:18,~runBeagle5(targetVCF=paste0(targetVCFpath,"chr",.,
+                                             "_DCas21_6651.vcf.gz"),
+                            refVCF=paste0(refVCFpath,"chr",.,"_ImputationReferencePanel_StageIIpartI_72219.vcf.gz"),
+                            mapFile=paste0(mapPath,"chr",.,"_cassava_cM_pred.v6_91019.map"),
+                            outName=paste0(outPath,"chr",.,"_DCas21_6651_WA_REFimputed"),
+                            nthreads=112))
+```
+
+```{bash Coping results to jj332_cas folder, eval = F}
+mkdir BeagleLogs
+cp *_DCas21_6651_WA_REFimputed.log BeagleLogs/
+cp -r BeagleLogs /home/jj332_cas/lbraatz/DCas21_6651/output/
+cp *_DCas21_6651_WA_REFimputed* /home/jj332_cas/lbraatz/DCas21_6651/output/
+
+```
+
+
+### Post-impute filter
+
+```{r Filter SNPs markers, eval = F}
+inPath<-here::here("output/")
+outPath<-here::here("output/")
+source(here::here("code","imputationFunctions.R"))
+require(furrr); options(mc.cores=18); plan(multiprocess)
+future_map(1:18,~postImputeFilter(inPath=inPath,
+                                  inName=paste0("chr",.,"_DCas21_6651_WA_REFimputed"),
+                                  outPath=outPath,
+                                  outName=paste0("chr",.,"_DCas21_6651_WA_REFimputedAndFiltered")))
+```
+
+Let's check what is left
+
+```{r Checking the markers per chromosome, eval = F}
+purrr::map(1:18,~system(paste0("zcat ",here::here("output/"),"chr",.,"_DCas21_6651_WA_REFimputedAndFiltered.vcf.gz | wc -l")))
+```
+
+```
+2216
+1826
+1915
+1294
+1612
+1526
+1031
+1301
+1820
+924
+1530
+1435
+1388
+2337
+1849
+1481
+975
+1211
+```
+
+### Convert VCF to dosage matrix
+
+```{r Convert VCF file to dosage matrix, eval = F}
+library(tidyverse); library(magrittr); library(genomicMateSelectR)
+require(furrr); options(mc.cores=18); plan(multiprocess)
+pathOut<-here::here("output/")
+
+# DCas21_6651
+future_map(1:18,~convertVCFtoDosage(pathIn=here::here("output/"),pathOut=pathOut,
+                                    vcfName = paste0("chr",.,"_DCas21_6651_WA_REFimputedAndFiltered")))
+# Genome-wide dosage (for use in R) for each dataset
+# DCas21_6651
+createGenomewideDosage(pathIn = here::here("output/"), chroms=1:18, "_DCas21_6651_WA_REFimputedAndFiltered")
+```
+
+```{bash Coping results to jj332_cas folder in cbsu home directory, eval = F}
+cp *_DCas21_6651_WA_REFimputedAndFiltered.* /home/jj332_cas/lbraatz/DCas21_6651/output/.
+cp DosageMatrix_DCas21_6651_WA_REFimputedAndFiltered.rds /home/jj332_cas/lbraatz/DCas21_6651/output/.
+cp DCas21_6651.* /home/jj332_cas/lbraatz/DCas21_6651/output/.
+```
+
+### Test Markers to see their polymorphism
+
+```{r Checking PIC for the remaining Mrks, eval = F}
+suppressMessages(library(tidyverse)); library(here)
+IITAMrks <- readRDS(here::here("output", "DosageMatrix_DCas21_6651_WA_REFimputedAndFiltered.rds"))
+
+freq <- colMeans(IITAMrks)/2
+sum(freq > 0.5)
+
+for(i in 1:length(freq)){
+  if(freq[i] > 0.5){
+    freq[i] <- (1 - freq[i])
+    }
+}
+
+sum(freq >= 0.05)
+
+PIC <- tibble(SNPs = names(freq),
+              PIC = (2*(1-freq)*freq))
+
+PIC %>% ggplot(aes(x = PIC)) +
+  geom_density()
+```
+
+
+### Do not Run - Still working on
+```{bash Mining Marnin Code, eval = F}
+export PATH=/programs/plink-1.9-x86_64-beta3.30:$PATH 
+plink --vcf ", pathIn, vcfName, ".vcf.gz ", "--make-bed --const-fid --keep-allele-order ", 
+        "--out ", pathOut, vcfName))
+    system(paste0("zcat ", pathIn, vcfName, ".vcf.gz ", "| cut -f1-5 > ", 
+        pathOut, vcfName, ".sitesWithAlleles"))
+    read.table(paste0(pathOut, vcfName, ".sitesWithAlleles"), 
+        stringsAsFactors = F, header = F, sep = c("\t")) %>% 
+        select(V3, V5) %>% write.table(., file = paste0(pathOut, 
+        vcfName, ".alleleToCount"), row.names = F, sep = c("\t"), 
+        quote = F, col.names = F)
+    system(paste0("export PATH=/programs/plink-1.9-x86_64-beta3.30:$PATH;", 
+        "plink --bfile ", pathOut, vcfName, " --keep-allele-order --recode A ", 
+        "--recode-allele ", pathOut, vcfName, ".alleleToCount ", 
+        "--out ", pathOut, vcfName))
+```
+
